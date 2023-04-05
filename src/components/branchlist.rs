@@ -1,7 +1,7 @@
 use super::{
 	utils::scroll_vertical::VerticalScroll, visibility_blocking,
 	CommandBlocking, CommandInfo, Component, DrawableComponent,
-	EventState, InspectCommitOpen,
+	EventState, InputType, InspectCommitOpen, TextInputComponent,
 };
 use crate::{
 	components::ScrollType,
@@ -26,6 +26,7 @@ use asyncgit::{
 	AsyncGitNotification,
 };
 use crossterm::event::Event;
+use fuzzy_matcher::FuzzyMatcher;
 use std::{cell::Cell, convert::TryInto};
 use tui::{
 	backend::Backend,
@@ -43,9 +44,13 @@ use unicode_truncate::UnicodeTruncateStr;
 pub struct BranchListComponent {
 	repo: RepoPathRef,
 	branches: Vec<BranchInfo>,
+	branches_filtered: Vec<usize>,
+	branches_filtered_matches: Vec<(usize, Vec<usize>)>,
 	local: bool,
 	has_remotes: bool,
 	visible: bool,
+	fuzzy_find: bool,
+	fuzzy_find_input: TextInputComponent,
 	selection: u16,
 	scroll: VerticalScroll,
 	current_height: Cell<u16>,
@@ -91,7 +96,7 @@ impl DrawableComponent for BranchListComponent {
 			let chunks = Layout::default()
 				.direction(Direction::Vertical)
 				.constraints(
-					[Constraint::Length(2), Constraint::Min(1)]
+					[Constraint::Length(2), Constraint::Min(6)]
 						.as_ref(),
 				)
 				.split(area);
@@ -206,6 +211,12 @@ impl Component for BranchListComponent {
 				self.has_remotes,
 				!self.local,
 			));
+
+			out.push(CommandInfo::new(
+				strings::commands::fuzzy_find(&self.key_config),
+				true,
+				true,
+			));
 		}
 		visibility_blocking(self)
 	}
@@ -215,6 +226,31 @@ impl Component for BranchListComponent {
 	fn event(&mut self, ev: &Event) -> Result<EventState> {
 		if !self.visible {
 			return Ok(EventState::NotConsumed);
+		}
+
+		if self.fuzzy_find {
+			if let Event::Key(e) = ev {
+				if key_match(e, self.key_config.keys.exit_popup) {
+					self.fuzzy_find = false;
+					return Ok(EventState::Consumed);
+				} else if key_match(e, self.key_config.keys.popup_up)
+				{
+					return self
+						.move_selection(ScrollType::Down)
+						.map(Into::into);
+				} else if key_match(
+					e,
+					self.key_config.keys.popup_down,
+				) {
+					return self
+						.move_selection(ScrollType::Up)
+						.map(Into::into);
+				}
+			}
+			if self.fuzzy_find_input.event(ev)?.is_consumed() {
+				self.update_filter();
+				return Ok(EventState::Consumed);
+			}
 		}
 
 		if let Event::Key(e) = ev {
@@ -312,6 +348,15 @@ impl Component for BranchListComponent {
 			) {
 				//do not consume if its the more key
 				return Ok(EventState::NotConsumed);
+			} else if key_match(e, self.key_config.keys.fuzzy_find) {
+				self.fuzzy_find = !self.fuzzy_find;
+				// if self.fuzzy_find {
+				// 	self.fuzzy_find_input.show()?;
+				// 	self.fuzzy_find_input.focus(true);
+				// } else {
+				// 	self.fuzzy_find_input.focus(false);
+				// 	self.fuzzy_find_input.hide();
+				// }
 			}
 		}
 
@@ -324,10 +369,13 @@ impl Component for BranchListComponent {
 
 	fn hide(&mut self) {
 		self.visible = false;
+		self.fuzzy_find_input.hide();
 	}
 
 	fn show(&mut self) -> Result<()> {
+		self.fuzzy_find_input.set_text(String::new());
 		self.visible = true;
+		self.fuzzy_find_input.show()?;
 
 		Ok(())
 	}
@@ -340,11 +388,25 @@ impl BranchListComponent {
 		theme: SharedTheme,
 		key_config: SharedKeyConfig,
 	) -> Self {
+		let mut fuzzy_find_input = TextInputComponent::new(
+			theme.clone(),
+			key_config.clone(),
+			"",
+			"fuzzy find",
+			false,
+		)
+		.with_input_type(InputType::Singleline);
+		fuzzy_find_input.embed();
+
 		Self {
 			branches: Vec::new(),
+			branches_filtered_matches: Vec::new(),
+			branches_filtered: Vec::new(),
 			local: true,
 			has_remotes: false,
 			visible: false,
+			fuzzy_find: false,
+			fuzzy_find_input,
 			selection: 0,
 			scroll: VerticalScroll::new(),
 			queue,
@@ -359,6 +421,8 @@ impl BranchListComponent {
 	pub fn open(&mut self) -> Result<()> {
 		self.show()?;
 		self.update_branches()?;
+		self.fuzzy_find = false;
+		self.update_filter();
 
 		Ok(())
 	}
@@ -404,6 +468,7 @@ impl BranchListComponent {
 
 	fn valid_selection(&self) -> bool {
 		!self.branches.is_empty()
+			&& !self.branches_filtered.is_empty()
 	}
 
 	fn merge_branch(&mut self) -> Result<()> {
@@ -470,6 +535,9 @@ impl BranchListComponent {
 	}
 
 	fn selection_is_cur_branch(&self) -> bool {
+		if self.branches_filtered.is_empty() {
+			return false;
+		}
 		self.branches
 			.iter()
 			.enumerate()
@@ -477,7 +545,8 @@ impl BranchListComponent {
 				b.local_details()
 					.map(|details| {
 						details.is_head
-							&& *index == self.selection as usize
+							// && *index == self.selection as usize
+							&& *index == self.branches_filtered[self.selection as usize]
 					})
 					.unwrap_or_default()
 			})
@@ -504,7 +573,7 @@ impl BranchListComponent {
 			ScrollType::Home => 0,
 			ScrollType::End => {
 				let num_branches: u16 =
-					self.branches.len().try_into()?;
+					self.branches_filtered.len().try_into()?;
 				num_branches.saturating_sub(1)
 			}
 		};
@@ -515,7 +584,8 @@ impl BranchListComponent {
 	}
 
 	fn set_selection(&mut self, selection: u16) -> Result<()> {
-		let num_branches: u16 = self.branches.len().try_into()?;
+		let num_branches: u16 =
+			self.branches_filtered.len().try_into()?;
 		let num_branches = num_branches.saturating_sub(1);
 
 		let selection = if selection > num_branches {
@@ -555,13 +625,27 @@ impl BranchListComponent {
 			.saturating_sub(THREE_DOTS_LENGTH);
 		let mut txt = Vec::new();
 
-		for (i, displaybranch) in self
-			.branches
-			.iter()
-			.skip(self.scroll.get_top())
-			.take(height)
-			.enumerate()
-		{
+		// TODO
+		// fuzzy matchしている箇所をハイライトする
+		// vecは一つ持っていれば十分
+		let to_display: Vec<(usize, &BranchInfo)> =
+			if self.fuzzy_find_input.get_text().is_empty() {
+				self.branches
+					.iter()
+					.skip(self.scroll.get_top())
+					.enumerate()
+					.take(height)
+					.collect()
+			} else {
+				self.branches_filtered
+					.iter()
+					.skip(self.scroll.get_top())
+					.map(|&x| (x, &self.branches[x]))
+					.take(height)
+					.collect()
+			};
+
+		for (i, displaybranch) in to_display {
 			let mut commit_message =
 				displaybranch.top_commit_message.clone();
 			if commit_message.len() > commit_message_length {
@@ -586,9 +670,13 @@ impl BranchListComponent {
 				branch_name += THREE_DOTS;
 			}
 
-			let selected = (self.selection as usize
-				- self.scroll.get_top())
-				== i;
+			let selected = if self.branches_filtered.is_empty() {
+				false
+			} else {
+				self.branches_filtered
+					[self.selection as usize - self.scroll.get_top()]
+					== i
+			};
 
 			let is_head = displaybranch
 				.local_details()
@@ -645,16 +733,17 @@ impl BranchListComponent {
 			anyhow::bail!("no valid branch selected");
 		}
 
+		let index = self.branches_filtered[self.selection as usize];
 		if self.local {
 			checkout_branch(
 				&self.repo.borrow(),
-				&self.branches[self.selection as usize].reference,
+				&self.branches[index].reference,
 			)?;
 			self.hide();
 		} else {
 			checkout_remote_branch(
 				&self.repo.borrow(),
-				&self.branches[self.selection as usize],
+				&self.branches[index],
 			)?;
 			self.local = true;
 			self.update_branches()?;
@@ -687,17 +776,58 @@ impl BranchListComponent {
 		);
 	}
 
+	fn draw_fuzzy_find_input<B: Backend>(
+		&self,
+		f: &mut Frame<B>,
+		r: Rect,
+	) -> Result<()> {
+		self.fuzzy_find_input.draw(f, r)?;
+		Ok(())
+	}
+
 	fn draw_list<B: Backend>(
 		&self,
 		f: &mut Frame<B>,
 		r: Rect,
 	) -> Result<()> {
+		let mut r = r;
+		let mut chunks = Layout::default()
+			.direction(Direction::Vertical)
+			.constraints(
+				[Constraint::Length(3), Constraint::Min(1)].as_ref(),
+			)
+			.split(r);
+
+		f.render_widget(
+			Block::default()
+				.border_type(BorderType::Plain)
+				.border_style(self.theme.block(self.fuzzy_find))
+				.borders(Borders::ALL),
+			chunks[0],
+		);
+		f.render_widget(
+			Block::default()
+				.border_type(BorderType::Plain)
+				.border_style(self.theme.block(!self.fuzzy_find))
+				.borders(Borders::ALL),
+			chunks[1],
+		);
+		chunks[0] = chunks[0].inner(&Margin {
+			vertical: (1),
+			horizontal: (1),
+		});
+		chunks[1] = chunks[1].inner(&Margin {
+			vertical: (1),
+			horizontal: (1),
+		});
+		r = chunks[1];
+		self.draw_fuzzy_find_input(f, chunks[0])?;
 		let height_in_lines = r.height as usize;
 		self.current_height.set(height_in_lines.try_into()?);
 
 		self.scroll.update(
 			self.selection as usize,
-			self.branches.len(),
+			self.branches_filtered.len(),
 			height_in_lines,
 		);
 
@@ -711,7 +841,6 @@ impl BranchListComponent {
 			r,
 		);
 
-		let mut r = r;
 		r.width += 1;
 		r.height += 2;
 		r.y = r.y.saturating_sub(1);
@@ -740,5 +869,53 @@ impl BranchListComponent {
 				Action::DeleteRemoteBranch(reference)
 			},
 		));
+	}
+
+	fn refresh_selection(&mut self) {
+		if self.selection >= self.branches_filtered.len() as u16 {
+			self.selection = self.branches_filtered.len() as u16;
+			self.selection = self.selection.saturating_sub(1);
+		}
+		if self.branches_filtered.is_empty() {
+			self.selection = 0;
+		}
+	}
+
+	fn update_filter(&mut self) {
+		let q = self.fuzzy_find_input.get_text();
+		self.branches_filtered.clear();
+		self.branches_filtered_matches.clear();
+
+		if q.is_empty() {
+			self.branches_filtered.extend(
+				self.branches.iter().enumerate().map(|a| a.0),
+			);
+			return;
+		}
+
+		let matcher = fuzzy_matcher::skim::SkimMatcherV2::default();
+
+		let mut branches = self
+			.branches
+			.iter()
+			.enumerate()
+			.filter_map(|a| {
+				matcher
+					.fuzzy_indices(&a.1.name, &q)
+					.map(|(score, indices)| (score, a.0, indices))
+			})
+			.collect::<Vec<(_, _, _)>>();
+
+		branches.sort_by(|(score1, _, _), (score2, _, _)| {
+			score2.cmp(score1)
+		});
+
+		self.branches_filtered_matches.extend(
+			branches.into_iter().map(|entry| (entry.1, entry.2)),
+		);
+		self.branches_filtered.extend(
+			self.branches_filtered_matches.iter().map(|a| a.0),
+		);
+		self.refresh_selection();
 	}
 }

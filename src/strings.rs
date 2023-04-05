@@ -1561,4 +1561,15 @@ pub mod commands {
 			CMD_GROUP_BRANCHES,
 		)
 	}
+
+	pub fn fuzzy_find(key_config: &SharedKeyConfig) -> CommandText {
+		CommandText::new(
+			format!(
+				"Find [{}]",
+				key_config.get_hint(key_config.keys.fuzzy_find),
+			),
+			"fuzzy find",
+			CMD_GROUP_BRANCHES,
+		)
+	}
 }
