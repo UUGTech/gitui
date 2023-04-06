@@ -362,7 +362,7 @@ impl CommitList {
 			txt.push(splitter.clone());
 			txt.push(Span::styled(
 				branches,
-				theme.branch(selected, true),
+				theme.branch(selected, true, false),
 			));
 		}
 

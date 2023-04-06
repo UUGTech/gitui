@@ -80,7 +80,7 @@ impl ResetPopupComponent {
 			),
 			Span::styled(
 				self.git_branch_name.last().unwrap_or_default(),
-				self.theme.branch(false, true),
+				self.theme.branch(false, true, false),
 			),
 		]));
 

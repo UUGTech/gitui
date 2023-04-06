@@ -61,13 +61,23 @@ impl Theme {
 		}
 	}
 
-	pub fn branch(&self, selected: bool, head: bool) -> Style {
-		let branch = if head {
+	pub fn branch(
+		&self,
+		selected: bool,
+		head: bool,
+		hit: bool,
+	) -> Style {
+		let mut branch = if head {
 			Style::default().add_modifier(Modifier::BOLD)
 		} else {
 			Style::default()
 		}
 		.fg(self.branch_fg);
+
+		if hit {
+			branch =
+				branch.patch(Style::default().fg(self.disabled_fg));
+		}
 
 		if selected {
 			branch.patch(Style::default().bg(self.selection_bg))

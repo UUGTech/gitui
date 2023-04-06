@@ -27,7 +27,7 @@ use asyncgit::{
 };
 use crossterm::event::Event;
 use fuzzy_matcher::FuzzyMatcher;
-use std::{cell::Cell, convert::TryInto};
+use std::{borrow::Cow, cell::Cell, convert::TryInto};
 use tui::{
 	backend::Backend,
 	layout::{
@@ -44,8 +44,7 @@ use unicode_truncate::UnicodeTruncateStr;
 pub struct BranchListComponent {
 	repo: RepoPathRef,
 	branches: Vec<BranchInfo>,
-	branches_filtered: Vec<usize>,
-	branches_filtered_matches: Vec<(usize, Vec<usize>)>,
+	branches_filtered: Vec<(usize, Vec<usize>)>,
 	local: bool,
 	has_remotes: bool,
 	visible: bool,
@@ -400,7 +399,6 @@ impl BranchListComponent {
 
 		Self {
 			branches: Vec::new(),
-			branches_filtered_matches: Vec::new(),
 			branches_filtered: Vec::new(),
 			local: true,
 			has_remotes: false,
@@ -546,7 +544,7 @@ impl BranchListComponent {
 					.map(|details| {
 						details.is_head
 							// && *index == self.selection as usize
-							&& *index == self.branches_filtered[self.selection as usize]
+							&& *index == self.branches_filtered[self.selection as usize].0
 					})
 					.unwrap_or_default()
 			})
@@ -625,27 +623,17 @@ impl BranchListComponent {
 			.saturating_sub(THREE_DOTS_LENGTH);
 		let mut txt = Vec::new();
 
-		// TODO
-		// fuzzy matchしている箇所をハイライトする
-		// vecは一つ持っていれば十分
-		let to_display: Vec<(usize, &BranchInfo)> =
-			if self.fuzzy_find_input.get_text().is_empty() {
-				self.branches
-					.iter()
-					.skip(self.scroll.get_top())
-					.enumerate()
-					.take(height)
-					.collect()
-			} else {
-				self.branches_filtered
-					.iter()
-					.skip(self.scroll.get_top())
-					.map(|&x| (x, &self.branches[x]))
-					.take(height)
-					.collect()
-			};
+		let to_display: Vec<(&BranchInfo, &Vec<usize>)> = self
+			.branches_filtered
+			.iter()
+			.skip(self.scroll.get_top())
+			.map(|a| (&self.branches[a.0], &a.1))
+			.take(height)
+			.collect();
 
-		for (i, displaybranch) in to_display {
+		for (i, (displaybranch, indices)) in
+			to_display.iter().enumerate()
+		{
 			let mut commit_message =
 				displaybranch.top_commit_message.clone();
 			if commit_message.len() > commit_message_length {
@@ -673,9 +661,7 @@ impl BranchListComponent {
 			let selected = if self.branches_filtered.is_empty() {
 				false
 			} else {
-				self.branches_filtered
-					[self.selection as usize - self.scroll.get_top()]
-					== i
+				self.selection as usize - self.scroll.get_top() == i
 			};
 
 			let is_head = displaybranch
@@ -711,17 +697,27 @@ impl BranchListComponent {
 				commit_message.to_string(),
 				theme.text(true, selected),
 			);
-			let span_name = Span::styled(
-				format!("{branch_name:branch_name_length$} "),
-				theme.branch(selected, is_head),
-			);
 
-			txt.push(Spans::from(vec![
-				span_prefix,
-				span_name,
-				span_hash,
-				span_msg,
-			]));
+			let branch_name =
+				format!("{branch_name:branch_name_length$} ");
+			let spans_name = branch_name
+				.char_indices()
+				.map(|(c_idx, c)| {
+					let hit = indices.contains(&c_idx);
+					Span::styled(
+						Cow::from(c.to_string()),
+						theme.branch(selected, is_head, hit),
+					)
+				})
+				.collect::<Vec<_>>();
+
+			let mut spans: Vec<Span> = Vec::new();
+			spans.push(span_prefix);
+			spans.extend(spans_name);
+			spans.push(span_hash);
+			spans.push(span_msg);
+
+			txt.push(Spans::from(spans));
 		}
 
 		Text::from(txt)
@@ -733,7 +729,7 @@ impl BranchListComponent {
 			anyhow::bail!("no valid branch selected");
 		}
 
-		let index = self.branches_filtered[self.selection as usize];
+		let index = self.branches_filtered[self.selection as usize].0;
 		if self.local {
 			checkout_branch(
 				&self.repo.borrow(),
@@ -884,11 +880,13 @@ impl BranchListComponent {
 	fn update_filter(&mut self) {
 		let q = self.fuzzy_find_input.get_text();
 		self.branches_filtered.clear();
-		self.branches_filtered_matches.clear();
 
 		if q.is_empty() {
 			self.branches_filtered.extend(
-				self.branches.iter().enumerate().map(|a| a.0),
+				self.branches
+					.iter()
+					.enumerate()
+					.map(|a| (a.0, Vec::new())),
 			);
 			return;
 		}
@@ -910,11 +908,8 @@ impl BranchListComponent {
 			score2.cmp(score1)
 		});
 
-		self.branches_filtered_matches.extend(
-			branches.into_iter().map(|entry| (entry.1, entry.2)),
-		);
 		self.branches_filtered.extend(
-			self.branches_filtered_matches.iter().map(|a| a.0),
+			branches.into_iter().map(|entry| (entry.1, entry.2)),
 		);
 		self.refresh_selection();
 	}
