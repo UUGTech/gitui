@@ -527,6 +527,17 @@ pub mod commands {
 			CMD_GROUP_GENERAL,
 		)
 	}
+	pub fn scroll_popup(key_config: &SharedKeyConfig) -> CommandText {
+		CommandText::new(
+			format!(
+				"Scroll [{}{}]",
+				key_config.get_hint(key_config.keys.popup_up),
+				key_config.get_hint(key_config.keys.popup_down)
+			),
+			"scroll up or down in popup",
+			CMD_GROUP_GENERAL,
+		)
+	}
 	pub fn commit_list_mark(
 		key_config: &SharedKeyConfig,
 		marked: bool,
@@ -690,6 +701,16 @@ pub mod commands {
 				key_config.get_hint(key_config.keys.exit_popup),
 			),
 			"close overlay (e.g commit, help)",
+			CMD_GROUP_GENERAL,
+		)
+	}
+	pub fn escape_embedded_input(key_config: &SharedKeyConfig) -> CommandText {
+		CommandText::new(
+			format!(
+				"Back [{}]",
+				key_config.get_hint(key_config.keys.exit_popup),
+			),
+			"go back from embedded input",
 			CMD_GROUP_GENERAL,
 		)
 	}

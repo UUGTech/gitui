@@ -119,23 +119,38 @@ impl Component for BranchListComponent {
 				out.clear();
 			}
 
-			out.push(CommandInfo::new(
-				strings::commands::scroll(&self.key_config),
-				true,
-				true,
-			));
+			if !self.fuzzy_find {
+				out.push(CommandInfo::new(
+					strings::commands::scroll(&self.key_config),
+					true,
+					true,
+				));
 
-			out.push(CommandInfo::new(
-				strings::commands::close_popup(&self.key_config),
-				true,
-				true,
-			));
+				out.push(CommandInfo::new(
+					strings::commands::close_popup(&self.key_config),
+					true,
+					true,
+				));
+			} else {
+				out.push(CommandInfo::new(
+					strings::commands::scroll_popup(&self.key_config),
+					true,
+					true,
+				));
+
+				out.push(CommandInfo::new(
+					strings::commands::escape_embedded_input(&self.key_config),
+					true,
+					true,
+				));
+
+			}
 
 			out.push(CommandInfo::new(
 				strings::commands::commit_details_open(
 					&self.key_config,
 				),
-				true,
+				!self.fuzzy_find,
 				true,
 			));
 
@@ -143,7 +158,7 @@ impl Component for BranchListComponent {
 				strings::commands::compare_with_head(
 					&self.key_config,
 				),
-				!self.selection_is_cur_branch(),
+				!self.fuzzy_find && !self.selection_is_cur_branch(),
 				true,
 			));
 
@@ -169,7 +184,7 @@ impl Component for BranchListComponent {
 				strings::commands::open_branch_create_popup(
 					&self.key_config,
 				),
-				true,
+				!self.fuzzy_find,
 				self.local,
 			));
 
@@ -177,7 +192,7 @@ impl Component for BranchListComponent {
 				strings::commands::delete_branch_popup(
 					&self.key_config,
 				),
-				!self.selection_is_cur_branch(),
+				!self.fuzzy_find && !self.selection_is_cur_branch(),
 				true,
 			));
 
@@ -185,7 +200,7 @@ impl Component for BranchListComponent {
 				strings::commands::merge_branch_popup(
 					&self.key_config,
 				),
-				!self.selection_is_cur_branch(),
+				!self.fuzzy_find && !self.selection_is_cur_branch(),
 				true,
 			));
 
@@ -193,7 +208,7 @@ impl Component for BranchListComponent {
 				strings::commands::branch_popup_rebase(
 					&self.key_config,
 				),
-				!self.selection_is_cur_branch(),
+				!self.fuzzy_find && !self.selection_is_cur_branch(),
 				true,
 			));
 
@@ -201,20 +216,20 @@ impl Component for BranchListComponent {
 				strings::commands::rename_branch_popup(
 					&self.key_config,
 				),
-				true,
+				!self.fuzzy_find,
 				self.local,
 			));
 
 			out.push(CommandInfo::new(
 				strings::commands::fetch_remotes(&self.key_config),
-				self.has_remotes,
+				!self.fuzzy_find && self.has_remotes,
 				!self.local,
 			));
 
 			out.push(CommandInfo::new(
 				strings::commands::fuzzy_find(&self.key_config),
-				true,
-				true,
+				!self.fuzzy_find,
+				!self.fuzzy_find,
 			));
 		}
 		visibility_blocking(self)
